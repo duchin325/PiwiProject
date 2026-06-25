@@ -9,7 +9,7 @@ import { OrderTripModule } from './order-trip/order-trip.module';
 import { AuthModule } from './auth/auth.module';
 import { DriversModule } from './drivers/drivers.module';
 import { TripStopsModule } from './trip-stops/trip-stops.module';
-
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -22,7 +22,8 @@ import { TripStopsModule } from './trip-stops/trip-stops.module';
     DriversModule,
     TripStopsModule,
     AuthModule,
-    ConfigModule.forRoot({ isGlobal: true }) 
+    HealthModule,
+    ConfigModule.forRoot({ isGlobal: true }),
   ],
 })
 export class AppModule {}

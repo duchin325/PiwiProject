@@ -1,4 +1,4 @@
 export interface OrderTrip {
-    orderId: number;
-    tripId: number;
+  orderId: number;
+  tripId: number;
 }

@@ -47,8 +47,7 @@ export class DriversService {
       .input('licenseNumber', licenseNumber)
       .input('truckPlate', truckPlate)
       .input('notes', notes)
-      .input('isActive', isActive)
-      .query(`
+      .input('isActive', isActive).query(`
         INSERT INTO Drivers (name, phone, licenseNumber, truckPlate, notes, isActive)
         OUTPUT INSERTED.id
         VALUES (@name, @phone, @licenseNumber, @truckPlate, @notes, @isActive)
@@ -81,7 +80,9 @@ export class DriversService {
     } catch (err) {
       this.logger.error(`Error updating driver ${id}`, err.stack);
       if (err instanceof NotFoundException) throw err;
-      throw new InternalServerErrorException('Unexpected error updating driver');
+      throw new InternalServerErrorException(
+        'Unexpected error updating driver',
+      );
     }
   }
 

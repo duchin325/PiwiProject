@@ -6,6 +6,6 @@ import { DatabaseModule } from 'src/database/database.module';
 @Module({
   imports: [DatabaseModule],
   providers: [RoutesService],
-  controllers: [RoutesController]
+  controllers: [RoutesController],
 })
 export class RoutesModule {}
