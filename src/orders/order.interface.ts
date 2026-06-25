@@ -7,4 +7,12 @@ export interface Order {
   volume: number | null;
   status: 'pendiente' | 'en tránsito' | 'entregado';
   createdAt: string;
+  originAddress: string | null;
+  destinationAddress: string | null;
+  senderName: string | null;
+  senderPhone: string | null;
+  recipientName: string | null;
+  recipientPhone: string | null;
+  amountToCollect: number | null;
+  notes: string | null;
 }
