@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConnectionPool } from 'mssql';
 import { Order } from './order.interface';
+import { CreateOrderDto } from './dto/create-order.dto';
+import { UpdateOrderDto } from './dto/update-order.dto';
 
 @Injectable()
 export class OrdersService {
@@ -24,7 +26,7 @@ export class OrdersService {
         return result.recordset[0] || null;
     }
 
-    async create(data: Omit<Order, 'id' | 'createdAt'>): Promise<number> {
+    async create(data: CreateOrderDto ): Promise<number> {
         const { clientId, origin, destination, weight, volume, status } = data;
         const result = await this.pool
                 .request()
@@ -42,7 +44,7 @@ export class OrdersService {
         return result.recordset[0].id;
     }
 
-    async update(id: number, data: Partial<Omit<Order, 'id' | 'createdAt'>>): Promise<void> {
+    async update(id: number, data: UpdateOrderDto): Promise<void> {
         const sets = Object.keys(data)
             .map((key) => `${key} = @${key}`)
             .join(', ');

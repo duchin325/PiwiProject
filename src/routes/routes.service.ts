@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConnectionPool } from 'mssql';
 import { Route } from './route.interface';
+import { CreateRouteDto } from './dto/create-route.dto';
+import { UpdateRouteDto } from './dto/update-route.dto';
 
 @Injectable()
 export class RoutesService {
@@ -24,7 +26,7 @@ export class RoutesService {
         return result.recordset[0] || null;
     }
     
-    async create(data: Omit<Route, 'id' | 'createdAt'>): Promise<number> {
+    async create(data: CreateRouteDto): Promise<number> {
         const { tripId, routeGeoJson, pdfUrl } = data;
         const result = await this.pool
                     .request()
@@ -39,7 +41,7 @@ export class RoutesService {
             return result.recordset[0].id;
         }
     
-        async update(id: number, data: Partial<Omit<Route, 'id' | 'createdAt'>>): Promise<void> {
+        async update(id: number, data: UpdateRouteDto): Promise<void> {
             const sets = Object.keys(data)
                 .map((key) => `${key} = @${key}`)
                 .join(', ');
