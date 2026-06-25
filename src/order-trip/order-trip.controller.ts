@@ -2,11 +2,9 @@ import {
   Controller,
   Body,
   Param,
-  NotFoundException,
   ParseIntPipe,
   Get,
   Post,
-  Put,
   Delete,
 } from '@nestjs/common';
 import { OrderTripService } from './order-trip.service';
@@ -30,31 +28,15 @@ export class OrderTripController {
   }
 
   @Get('trip/:tripId')
-  async getOneByTrip(
+  getOneByTrip(
     @Param('tripId', ParseIntPipe) tripId: number,
   ): Promise<OrderTrip[]> {
-    const route = await this.ordertripService.findOneByOrder(tripId);
-    if (!route) {
-      throw new NotFoundException(
-        `La ruta con el id ${tripId} no se encuentra`,
-      );
-    }
-
-    return route;
+    return this.ordertripService.findOneByTrip(tripId);
   }
 
   @Post()
-  async create(@Body() body: CreateOrderTripDto): Promise<void> {
-    const orderTrip = await this.ordertripService.create(body);
-    return orderTrip;
-  }
-
-  @Put(':id')
-  async update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: Partial<Omit<OrderTrip, 'id' | 'createdAt'>>,
-  ) {
-    return this.ordertripService.update(id, body);
+  async create(@Body() body: CreateOrderTripDto): Promise<OrderTrip> {
+    return this.ordertripService.create(body);
   }
 
   @Delete('order/:orderId/trip/:tripId')

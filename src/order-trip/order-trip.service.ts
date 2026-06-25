@@ -1,6 +1,14 @@
-import { Inject, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+} from '@nestjs/common';
 import { ConnectionPool } from 'mssql';
 import { OrderTrip } from './order-trip.interface';
+
+const SQL_ERROR_UNIQUE_VIOLATION = [2627, 2601];
+const SQL_ERROR_FK_VIOLATION = 547;
 
 @Injectable()
 export class OrderTripService {
@@ -13,14 +21,6 @@ export class OrderTripService {
     const result = await this.pool.request().query('SELECT * FROM Order_Trip');
     return result.recordset;
   }
-
-  // async findOne( id: number ): Promise<OrderTrip | null> {
-  //     const result = await this.pool
-  //             .request()
-  //             .input('id', id)
-  //             .query(`SELECT * FROM Order_Trip WHERE id = @id`);
-  //     return result.recordset[0] || null;
-  // }
 
   async findOneByOrder(orderId: number): Promise<OrderTrip[]> {
     const { recordset } = await this.pool
@@ -38,36 +38,36 @@ export class OrderTripService {
     return recordset;
   }
 
-  async create(data: OrderTrip): Promise<void> {
+  async create(data: OrderTrip): Promise<OrderTrip> {
     const { orderId, tripId } = data;
-    const result = await this.pool
-      .request()
-      .input('orderId', orderId)
-      .input('tripId', tripId).query(`
-                        INSERT INTO Order_Trip (orderId, tripId)
-                         VALUES (@orderId, @tripId)
-                    `);
-    return result.recordset[0].id;
-  }
 
-  async update(
-    id: number,
-    data: Partial<Omit<OrderTrip, 'id' | 'createdAt'>>,
-  ): Promise<void> {
-    const sets = Object.keys(data)
-      .map((key) => `${key} = @${key}`)
-      .join(', ');
-
-    const req = this.pool.request().input('id', id);
-    for (const [k, v] of Object.entries(data)) {
-      req.input(k, v);
+    try {
+      await this.pool
+        .request()
+        .input('orderId', orderId)
+        .input('tripId', tripId).query(`
+          INSERT INTO Order_Trip (orderId, tripId)
+          VALUES (@orderId, @tripId)
+        `);
+    } catch (err) {
+      const sqlError = err as { number?: number };
+      if (
+        sqlError.number &&
+        SQL_ERROR_UNIQUE_VIOLATION.includes(sqlError.number)
+      ) {
+        throw new ConflictException(
+          `La orden ${orderId} ya está asociada al viaje ${tripId}`,
+        );
+      }
+      if (sqlError.number === SQL_ERROR_FK_VIOLATION) {
+        throw new BadRequestException(
+          `orderId ${orderId} o tripId ${tripId} no existen`,
+        );
+      }
+      throw err;
     }
 
-    await req.query(`
-                     UPDATE Order_Trip
-                     SET ${sets}
-                     WHERE id = @id
-                `);
+    return { orderId, tripId };
   }
 
   async remove(orderId: number, tripId: number): Promise<void> {
