@@ -1,6 +1,7 @@
 import { Controller, Body, Param, NotFoundException, ParseIntPipe, Get, Post, Put, Delete } from '@nestjs/common';
 import { OrderTripService } from './order-trip.service';
 import { OrderTrip } from './order-trip.interface';
+import { CreateOrderTripDto } from './dto/create-order-trip.dto';
 
 @Controller('order-trip')
 export class OrderTripController {
@@ -27,7 +28,7 @@ export class OrderTripController {
     }
         
     @Post()
-    async create(@Body() body: OrderTrip ): Promise<void> {
+    async create(@Body() body: CreateOrderTripDto ): Promise<void> {
         const orderTrip = await this.ordertripService.create(body);
         return orderTrip;
     }

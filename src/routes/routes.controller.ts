@@ -1,6 +1,8 @@
 import { Controller, Param, Body, NotFoundException, ParseIntPipe, Get, Post, Put, Delete } from '@nestjs/common';
 import { RoutesService } from './routes.service';
 import { Route } from './route.interface';
+import { CreateRouteDto } from './dto/create-route.dto';
+import { UpdateRouteDto } from './dto/update-route.dto';
 
 @Controller('routes')
 export class RoutesController {
@@ -22,13 +24,13 @@ export class RoutesController {
         }
     
     @Post()
-        async create(@Body() body: Omit<Route, 'id' | 'createdAt'>): Promise<{id: number}> {
+        async create(@Body() body: CreateRouteDto): Promise<{id: number}> {
             const id = await this.routesService.create(body);
             return {id};
         }
     
     @Put(':id')
-        async update( @Param('id', ParseIntPipe) id: number, @Body() body: Partial<Omit<Route, 'id' | 'createdAt'>>) {
+        async update( @Param('id', ParseIntPipe) id: number, @Body() body: UpdateRouteDto) {
             return this.routesService.update(id, body);
         }
     

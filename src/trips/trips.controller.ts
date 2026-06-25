@@ -1,6 +1,9 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, ParseIntPipe, NotFoundException } from '@nestjs/common';
 import { TripsService } from './trips.service';
 import { Trip } from './trip.interface';
+import { CreateClientDto } from 'src/clients/dto/create-client.dto';
+import { CreateTripDto } from './dto/create-trip.dto';
+import { UpdateTripDto } from './dto/update-trip.dto';
 
 @Controller('trips')
 export class TripsController {
@@ -22,13 +25,13 @@ export class TripsController {
     }
 
     @Post()
-    async create(@Body() body: Omit<Trip, 'id' | 'createdAt'>): Promise<{id: number}> {
+    async create(@Body() body: CreateTripDto): Promise<{id: number}> {
         const id = await this.tripsService.create(body);
         return {id};
     }
     
     @Put(':id')
-    async update( @Param('id', ParseIntPipe) id: number, @Body() body: Partial<Omit<Trip, 'id' | 'createdAt'>>) {
+    async update( @Param('id', ParseIntPipe) id: number, @Body() body: UpdateTripDto) {
         return this.tripsService.update(id, body);
     }
     

@@ -1,14 +1,17 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, NotFoundException, Logger, InternalServerErrorException } from "@nestjs/common";
 import { ConnectionPool } from 'mssql';
 import { Client } from "./clients.interface";
+import { CreateClientDto } from "./dto/create-client.dto";
+import { UpdateClientDto } from "./dto/update-client.dto";
 
 @Injectable()
 export class ClientsService {
+  private readonly logger = new Logger(ClientsService.name);
+
   constructor(
     @Inject('DATABASE_CONNECTION')
     private readonly pool: ConnectionPool,
   ) {}
-
 
   async findAll(): Promise<Client[]> {
     const result = await this.pool
@@ -28,8 +31,9 @@ export class ClientsService {
     return result.recordset[0] || null;
   }
 
-  async create(data: Omit<Client, 'id' | 'createdAt'>): Promise<number> {
-    const { name, address, phone, email } = data;
+  async create(data: CreateClientDto): Promise<number> {
+    const { name, address, email } = data;
+    const phone = data.phone ?? null;
     const result = await this.pool
         .request()
         .input('name', name)
@@ -45,23 +49,44 @@ export class ClientsService {
     return result.recordset[0].id;
   }
 
-  async update(id: number, data: Partial<Omit<Client, 'id' | 'createdAt'>>): Promise<void> {
-      const sets = Object.keys(data)
-          .map((key) => `${key} = @${key}` )
+  async update(id: number, dto: UpdateClientDto): Promise<void> {
+
+      this.logger.warn(`Called update() with id ${id} dto =${JSON.stringify(dto)} `);
+
+      const sets = Object.keys(dto)
+      if (sets.length == 0) return;
+
+
+      const setClause = sets.map((key) => `${key} = @${key}` )
           .join(', ');
 
       const req = this.pool
           .request()
           .input('id', id);
-      for(const [k, v] of Object.entries(data)) {
-          req.input(k, v);
+
+
+      for(const set of sets) {
+          const value = (dto as any)[set];
+          req.input(set, value);
       }
 
-      await req.query(`
+      try {
+          const result = await req.query(`
                       UPDATE Clients
-                      SET ${sets}
+                      SET ${setClause}
                       WHERE id = @id
         `);
+
+          if (result.rowsAffected[0] === 0) {
+              throw new NotFoundException(`Client with id ${id} not found`);
+          }
+      } catch (err){
+          this.logger.error(`Error updating client ${id}`, err.stack);
+          if (err instanceof NotFoundException) throw err;
+          throw new InternalServerErrorException('Unexpected error updating client');
+      }
+
+      
   } 
 
   async remove(id: number): Promise<void> {

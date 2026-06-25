@@ -1,6 +1,8 @@
 import { Controller, Get, Body, Delete, Put, Post, ParseIntPipe, Param, NotFoundException } from '@nestjs/common';
 import { ClientsService } from './clients.service';
 import { Client } from './clients.interface';
+import { CreateClientDto } from './dto/create-client.dto';
+import { UpdateClientDto } from './dto/update-client.dto';
 
 @Controller('clients')
 export class ClientsController {
@@ -23,14 +25,15 @@ export class ClientsController {
     }
 
     @Post()
-    async create(@Body() body: Omit<Client, 'id' | 'createdAt'>): Promise<{id: number}> {
-        const id = await this.clientsService.create(body);
+    async create(@Body() dto: CreateClientDto): Promise<{id: number}> {
+        const id = await this.clientsService.create(dto);
         return {id};
     }
 
-    @Put()
-    async update(@Param('id', ParseIntPipe) id: number, @Body() body: Partial<Omit<Client, 'id' | 'createdAt'>>) {
-        return this.clientsService.update(id, body);
+    @Put(':id')
+    async update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateClientDto): Promise<void> {
+        console.log(`[ClientsController] update() called with the id ${id}`);
+        return this.clientsService.update(id, dto);
     }
 
     @Delete(':id')
