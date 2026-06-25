@@ -31,10 +31,7 @@ export class TripsService {
   }
 
   async findOne(id: number): Promise<Trip | null> {
-    const result = await this.pool
-      .request()
-      .input('id', id)
-      .query(`
+    const result = await this.pool.request().input('id', id).query(`
         SELECT
           id,
           COALESCE(departureTime, CAST(tripDate AS datetime2)) AS date,
@@ -63,8 +60,7 @@ export class TripsService {
       .input('origin', data.origin)
       .input('destination', data.destination)
       .input('status', data.status)
-      .input('notes', data.notes ?? null)
-      .query(`
+      .input('notes', data.notes ?? null).query(`
         INSERT INTO Trips (
           tripDate,
           vehicle,

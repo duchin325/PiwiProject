@@ -1,5 +1,12 @@
-import { IsNotEmpty, IsString, IsOptional, IsInt, IsNumber, IsEnum } from "class-validator";
-import { Type } from "class-transformer";
+import {
+  IsNotEmpty,
+  IsString,
+  IsOptional,
+  IsInt,
+  IsNumber,
+  IsEnum,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
 export enum OrderStatus {
   PENDIENTE = 'pendiente',
@@ -7,30 +14,28 @@ export enum OrderStatus {
   ENTREGADO = 'entregado',
 }
 
-
 export class CreateOrderDto {
+  @Type(() => Number)
+  @IsInt()
+  clientId: number;
 
-    @Type(() => Number)
-    @IsInt()
-    clientId: number;
+  @IsString()
+  @IsNotEmpty()
+  origin: string;
 
-    @IsString()
-    @IsNotEmpty()
-    origin: string;
+  @IsString()
+  @IsNotEmpty()
+  destination: string;
 
-    @IsString()
-    @IsNotEmpty()
-    destination: string;
+  @Type(() => Number)
+  @IsNotEmpty()
+  weight: number;
 
-    @Type(() => Number)
-    @IsNotEmpty()
-    weight: number;
+  @Type(() => Number)
+  @IsOptional()
+  @IsNumber()
+  volume: number;
 
-    @Type(() => Number)
-    @IsOptional()
-    @IsNumber()
-    volume: number;
-
-    @IsEnum(OrderStatus)
-    status: OrderStatus;
+  @IsEnum(OrderStatus)
+  status: OrderStatus;
 }

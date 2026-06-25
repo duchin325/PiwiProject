@@ -39,7 +39,9 @@ export class TripStopsService {
     const result = await this.pool
       .request()
       .input('tripId', tripId)
-      .query('SELECT * FROM TripStops WHERE tripId = @tripId ORDER BY sequence');
+      .query(
+        'SELECT * FROM TripStops WHERE tripId = @tripId ORDER BY sequence',
+      );
 
     return result.recordset;
   }
@@ -60,8 +62,7 @@ export class TripStopsService {
       .input('notes', data.notes ?? null)
       .input('cashOnDelivery', data.cashOnDelivery ?? false)
       .input('cashAmount', data.cashAmount ?? null)
-      .input('completed', data.completed ?? false)
-      .query(`
+      .input('completed', data.completed ?? false).query(`
         INSERT INTO TripStops (
           tripId,
           orderId,
@@ -124,7 +125,9 @@ export class TripStopsService {
     } catch (err) {
       this.logger.error(`Error updating trip stop ${id}`, err.stack);
       if (err instanceof NotFoundException) throw err;
-      throw new InternalServerErrorException('Unexpected error updating trip stop');
+      throw new InternalServerErrorException(
+        'Unexpected error updating trip stop',
+      );
     }
   }
 
