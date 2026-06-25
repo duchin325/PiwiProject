@@ -33,10 +33,26 @@ export class OrdersService {
       .input('destination', destination)
       .input('weight', weight)
       .input('volume', volume)
-      .input('status', status).query(`
-                        INSERT INTO Orders (clientId, origin, destination, weight, volume, status)
+      .input('status', status)
+      .input('originAddress', data.originAddress ?? null)
+      .input('destinationAddress', data.destinationAddress ?? null)
+      .input('senderName', data.senderName ?? null)
+      .input('senderPhone', data.senderPhone ?? null)
+      .input('recipientName', data.recipientName ?? null)
+      .input('recipientPhone', data.recipientPhone ?? null)
+      .input('amountToCollect', data.amountToCollect ?? null)
+      .input('notes', data.notes ?? null).query(`
+                        INSERT INTO Orders (
+                          clientId, origin, destination, weight, volume, status,
+                          originAddress, destinationAddress, senderName, senderPhone,
+                          recipientName, recipientPhone, amountToCollect, notes
+                        )
                         OUTPUT INSERTED.id
-                        VALUES (@clientId, @origin, @destination, @weight, @volume, @status)
+                        VALUES (
+                          @clientId, @origin, @destination, @weight, @volume, @status,
+                          @originAddress, @destinationAddress, @senderName, @senderPhone,
+                          @recipientName, @recipientPhone, @amountToCollect, @notes
+                        )
                     `);
     return result.recordset[0].id;
   }

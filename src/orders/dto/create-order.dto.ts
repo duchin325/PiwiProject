@@ -38,4 +38,37 @@ export class CreateOrderDto {
 
   @IsEnum(OrderStatus)
   status: OrderStatus;
+
+  @IsOptional()
+  @IsString()
+  originAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  destinationAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  senderName?: string;
+
+  @IsOptional()
+  @IsString()
+  senderPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  recipientName?: string;
+
+  @IsOptional()
+  @IsString()
+  recipientPhone?: string;
+
+  @Type(() => Number)
+  @IsOptional()
+  @IsNumber()
+  amountToCollect?: number;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
