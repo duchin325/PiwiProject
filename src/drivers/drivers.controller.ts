@@ -8,12 +8,15 @@ import {
   ParseIntPipe,
   Post,
   Put,
+  UseGuards,
 } from '@nestjs/common';
 import { DriversService } from './drivers.service';
 import { Driver } from './drivers.interface';
 import { CreateDriverDto } from './dto/create-driver.dto';
 import { UpdateDriverDto } from './dto/update-driver.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
+@UseGuards(JwtAuthGuard)
 @Controller('drivers')
 export class DriversController {
   constructor(private readonly driversService: DriversService) {}

@@ -8,12 +8,15 @@ import {
   ParseIntPipe,
   Param,
   NotFoundException,
+  UseGuards,
 } from '@nestjs/common';
 import { ClientsService } from './clients.service';
 import { Client } from './clients.interface';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
+@UseGuards(JwtAuthGuard)
 @Controller('clients')
 export class ClientsController {
   constructor(private readonly clientsService: ClientsService) {}
