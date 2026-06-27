@@ -8,12 +8,15 @@ import {
   ParseIntPipe,
   Post,
   Put,
+  UseGuards,
 } from '@nestjs/common';
 import { CreateTripStopDto } from './dto/create-trip-stop.dto';
 import { UpdateTripStopDto } from './dto/update-trip-stop.dto';
 import { TripStop } from './trip-stop.interface';
 import { TripStopsService } from './trip-stops.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
+@UseGuards(JwtAuthGuard)
 @Controller('trip-stops')
 export class TripStopsController {
   constructor(private readonly tripStopsService: TripStopsService) {}

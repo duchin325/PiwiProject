@@ -6,11 +6,14 @@ import {
   Get,
   Post,
   Delete,
+  UseGuards,
 } from '@nestjs/common';
 import { OrderTripService } from './order-trip.service';
 import { OrderTrip } from './order-trip.interface';
 import { CreateOrderTripDto } from './dto/create-order-trip.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
+@UseGuards(JwtAuthGuard)
 @Controller('order-trip')
 export class OrderTripController {
   constructor(private readonly ordertripService: OrderTripService) {}
