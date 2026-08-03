@@ -10,6 +10,7 @@ import { AuthModule } from './auth/auth.module';
 import { DriversModule } from './drivers/drivers.module';
 import { TripStopsModule } from './trip-stops/trip-stops.module';
 import { HealthModule } from './health/health.module';
+import { TripBatchesModule } from './trip-batches/trip-batches.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { HealthModule } from './health/health.module';
     OrderTripModule,
     DriversModule,
     TripStopsModule,
+    TripBatchesModule,
     AuthModule,
     HealthModule,
     ConfigModule.forRoot({ isGlobal: true }),
