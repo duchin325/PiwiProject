@@ -10,10 +10,14 @@ import {
   TripBatchTrip,
   TripBatchWithDriver,
 } from './interfaces/trip-batch.interface';
+import { RouteCity } from './interfaces/route-city.interface';
 import { CreateTripBatchDto } from './dto/create-trip-batch.dto';
 import { UpdateTripBatchDto } from './dto/update-trip-batch.dto';
+import { CreateRouteCityDto } from './dto/create-route-city.dto';
+import { UpdateRouteCityDto } from './dto/update-route-city.dto';
 
 const SQL_ERROR_FK_VIOLATION = 547;
+const DEFAULT_ROUTE_NAME = 'Ceres - Santa Fe';
 
 @Injectable()
 export class TripBatchesService {
@@ -79,7 +83,7 @@ export class TripBatchesService {
   }
 
   async create(data: CreateTripBatchDto): Promise<TripBatch> {
-    const routeName = data.routeName ?? 'Ceres - Santa Fe';
+    const routeName = data.routeName ?? DEFAULT_ROUTE_NAME;
     const status = data.status ?? 'draft';
     const notes = data.notes ?? null;
 
@@ -246,5 +250,173 @@ export class TripBatchesService {
       `);
 
     return result.recordset;
+  }
+
+  private async findRouteCityById(id: number): Promise<RouteCity | null> {
+    const result = await this.pool.request().input('id', id).query(`
+        SELECT id, routeName, cityName, sequence, isActive, createdAt
+        FROM dbo.RouteCities
+        WHERE id = @id
+      `);
+
+    return result.recordset[0] || null;
+  }
+
+  private async assertNoDuplicateCityName(
+    routeName: string,
+    cityName: string,
+    excludeId?: number,
+  ): Promise<void> {
+    const req = this.pool
+      .request()
+      .input('routeName', routeName)
+      .input('cityName', cityName);
+
+    let query = `
+      SELECT COUNT(*) AS count FROM dbo.RouteCities
+      WHERE routeName = @routeName AND cityName = @cityName AND isActive = 1
+    `;
+
+    if (excludeId !== undefined) {
+      req.input('excludeId', excludeId);
+      query += ' AND id <> @excludeId';
+    }
+
+    const result = await req.query(query);
+    if (result.recordset[0].count > 0) {
+      throw new BadRequestException(
+        `La ciudad "${cityName}" ya existe en la ruta "${routeName}"`,
+      );
+    }
+  }
+
+  private async assertNoDuplicateSequence(
+    routeName: string,
+    sequence: number,
+    excludeId?: number,
+  ): Promise<void> {
+    const req = this.pool
+      .request()
+      .input('routeName', routeName)
+      .input('sequence', sequence);
+
+    let query = `
+      SELECT COUNT(*) AS count FROM dbo.RouteCities
+      WHERE routeName = @routeName AND sequence = @sequence AND isActive = 1
+    `;
+
+    if (excludeId !== undefined) {
+      req.input('excludeId', excludeId);
+      query += ' AND id <> @excludeId';
+    }
+
+    const result = await req.query(query);
+    if (result.recordset[0].count > 0) {
+      throw new BadRequestException(
+        `El orden ${sequence} ya está en uso en la ruta "${routeName}"`,
+      );
+    }
+  }
+
+  async findRouteCities(routeName?: string): Promise<RouteCity[]> {
+    const effectiveRouteName = routeName ?? DEFAULT_ROUTE_NAME;
+
+    const result = await this.pool
+      .request()
+      .input('routeName', effectiveRouteName).query(`
+        SELECT id, routeName, cityName, sequence, isActive, createdAt
+        FROM dbo.RouteCities
+        WHERE routeName = @routeName AND isActive = 1
+        ORDER BY sequence ASC
+      `);
+
+    return result.recordset;
+  }
+
+  async createRouteCity(dto: CreateRouteCityDto): Promise<RouteCity> {
+    const routeName = dto.routeName ?? DEFAULT_ROUTE_NAME;
+
+    await this.assertNoDuplicateCityName(routeName, dto.cityName);
+    await this.assertNoDuplicateSequence(routeName, dto.sequence);
+
+    const result = await this.pool
+      .request()
+      .input('routeName', routeName)
+      .input('cityName', dto.cityName)
+      .input('sequence', dto.sequence).query(`
+        INSERT INTO dbo.RouteCities (routeName, cityName, sequence, isActive, createdAt)
+        OUTPUT INSERTED.id
+        VALUES (@routeName, @cityName, @sequence, 1, SYSUTCDATETIME())
+      `);
+
+    const id = result.recordset[0].id;
+    return (await this.findRouteCityById(id)) as RouteCity;
+  }
+
+  async updateRouteCity(
+    id: number,
+    dto: UpdateRouteCityDto,
+  ): Promise<RouteCity> {
+    const existing = await this.findRouteCityById(id);
+    if (!existing) {
+      throw new NotFoundException(
+        `La ciudad de ruta con id ${id} no se encuentra`,
+      );
+    }
+
+    const nextRouteName = dto.routeName ?? existing.routeName;
+    const nextCityName = dto.cityName ?? existing.cityName;
+    const nextSequence = dto.sequence ?? existing.sequence;
+
+    if (dto.routeName !== undefined || dto.cityName !== undefined) {
+      await this.assertNoDuplicateCityName(nextRouteName, nextCityName, id);
+    }
+    if (dto.routeName !== undefined || dto.sequence !== undefined) {
+      await this.assertNoDuplicateSequence(nextRouteName, nextSequence, id);
+    }
+
+    const sets: string[] = [];
+    const req = this.pool.request().input('id', id);
+
+    if (dto.routeName !== undefined) {
+      sets.push('routeName = @routeName');
+      req.input('routeName', dto.routeName);
+    }
+    if (dto.cityName !== undefined) {
+      sets.push('cityName = @cityName');
+      req.input('cityName', dto.cityName);
+    }
+    if (dto.sequence !== undefined) {
+      sets.push('sequence = @sequence');
+      req.input('sequence', dto.sequence);
+    }
+    if (dto.isActive !== undefined) {
+      sets.push('isActive = @isActive');
+      req.input('isActive', dto.isActive);
+    }
+
+    if (sets.length === 0) {
+      return existing;
+    }
+
+    await req.query(
+      `UPDATE dbo.RouteCities SET ${sets.join(', ')} WHERE id = @id`,
+    );
+
+    return (await this.findRouteCityById(id)) as RouteCity;
+  }
+
+  async removeRouteCity(id: number): Promise<void> {
+    const existing = await this.findRouteCityById(id);
+    if (!existing) {
+      throw new NotFoundException(
+        `La ciudad de ruta con id ${id} no se encuentra`,
+      );
+    }
+
+    await this.pool
+      .request()
+      .input('id', id)
+      .query('UPDATE dbo.RouteCities SET isActive = 0 WHERE id = @id');
   }
 }

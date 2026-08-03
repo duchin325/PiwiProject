@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   ParseIntPipe,
+  Query,
   NotFoundException,
   UseGuards,
 } from '@nestjs/common';
@@ -16,14 +17,43 @@ import {
   TripBatchTrip,
   TripBatchWithDriver,
 } from './interfaces/trip-batch.interface';
+import { RouteCity } from './interfaces/route-city.interface';
 import { CreateTripBatchDto } from './dto/create-trip-batch.dto';
 import { UpdateTripBatchDto } from './dto/update-trip-batch.dto';
+import { CreateRouteCityDto } from './dto/create-route-city.dto';
+import { UpdateRouteCityDto } from './dto/update-route-city.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard)
 @Controller('trip-batches')
 export class TripBatchesController {
   constructor(private readonly tripBatchesService: TripBatchesService) {}
+
+  // Declared before ':id' routes so 'route-cities' is not matched as the :id param.
+  @Get('route-cities')
+  async getRouteCities(
+    @Query('routeName') routeName?: string,
+  ): Promise<RouteCity[]> {
+    return this.tripBatchesService.findRouteCities(routeName);
+  }
+
+  @Post('route-cities')
+  async createRouteCity(@Body() body: CreateRouteCityDto): Promise<RouteCity> {
+    return this.tripBatchesService.createRouteCity(body);
+  }
+
+  @Put('route-cities/:id')
+  async updateRouteCity(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdateRouteCityDto,
+  ): Promise<RouteCity> {
+    return this.tripBatchesService.updateRouteCity(id, body);
+  }
+
+  @Delete('route-cities/:id')
+  async removeRouteCity(@Param('id', ParseIntPipe) id: number): Promise<void> {
+    return this.tripBatchesService.removeRouteCity(id);
+  }
 
   @Get()
   async getAll(): Promise<TripBatchWithDriver[]> {
