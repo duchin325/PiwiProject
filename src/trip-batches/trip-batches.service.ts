@@ -11,10 +11,20 @@ import {
   TripBatchWithDriver,
 } from './interfaces/trip-batch.interface';
 import { RouteCity } from './interfaces/route-city.interface';
-import { CreateTripBatchDto } from './dto/create-trip-batch.dto';
+import {
+  CandidateOrderRow,
+  SuggestedGroup,
+  SuggestedStop,
+  TripBatchSuggestion,
+} from './interfaces/trip-batch-suggestion.interface';
+import {
+  CreateTripBatchDto,
+  TripBatchDirection,
+} from './dto/create-trip-batch.dto';
 import { UpdateTripBatchDto } from './dto/update-trip-batch.dto';
 import { CreateRouteCityDto } from './dto/create-route-city.dto';
 import { UpdateRouteCityDto } from './dto/update-route-city.dto';
+import { TripBatchSuggestionDto } from './dto/trip-batch-suggestion.dto';
 
 const SQL_ERROR_FK_VIOLATION = 547;
 const DEFAULT_ROUTE_NAME = 'Ceres - Santa Fe';
@@ -418,5 +428,162 @@ export class TripBatchesService {
       .request()
       .input('id', id)
       .query('UPDATE dbo.RouteCities SET isActive = 0 WHERE id = @id');
+  }
+
+  private normalizeCityText(value: string): string {
+    return value.trim().toLowerCase();
+  }
+
+  private matchOrderCity(
+    rawCity: string | null | undefined,
+    routeCities: RouteCity[],
+  ): RouteCity | null {
+    if (!rawCity) {
+      return null;
+    }
+
+    const normalized = this.normalizeCityText(rawCity);
+
+    const exact = routeCities.find(
+      (rc) => this.normalizeCityText(rc.cityName) === normalized,
+    );
+    if (exact) {
+      return exact;
+    }
+
+    const partialMatches = routeCities
+      .filter((rc) => normalized.includes(this.normalizeCityText(rc.cityName)))
+      .sort((a, b) => b.cityName.length - a.cityName.length);
+
+    return partialMatches[0] ?? null;
+  }
+
+  private async findCandidateOrders(): Promise<CandidateOrderRow[]> {
+    const result = await this.pool.request().query(`
+      SELECT
+        o.id,
+        o.origin,
+        o.destination,
+        o.originCity,
+        o.destinationCity,
+        o.originAddress,
+        o.destinationAddress,
+        o.senderName,
+        o.senderPhone,
+        o.recipientName,
+        o.recipientPhone,
+        o.amountToCollect,
+        o.notes,
+        o.createdAt
+      FROM Orders o
+      WHERE o.status = 'pendiente'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM Order_Trip ot
+          INNER JOIN Trips t ON t.id = ot.tripId
+          WHERE ot.orderId = o.id
+            AND t.status <> 'canceled'
+        )
+    `);
+
+    return result.recordset;
+  }
+
+  async generateSuggestion(
+    dto: TripBatchSuggestionDto,
+  ): Promise<TripBatchSuggestion> {
+    await this.assertDriverExists(dto.driverId);
+
+    const isIda = dto.direction === TripBatchDirection.IDA;
+    const routeName = dto.routeName ?? DEFAULT_ROUTE_NAME;
+    const originCity = dto.originCity ?? (isIda ? 'Ceres' : 'Santa Fe');
+    const finalDestinationCity =
+      dto.finalDestinationCity ?? (isIda ? 'Santa Fe' : 'Ceres');
+    const maxStopsPerCity = dto.maxStopsPerCity ?? null;
+
+    const activeRouteCities = await this.findRouteCities(routeName);
+    const orderedRouteCities = isIda
+      ? activeRouteCities
+      : [...activeRouteCities].reverse();
+
+    const candidates = await this.findCandidateOrders();
+    const normalizedOriginCity = this.normalizeCityText(originCity);
+    const ordersByRouteCityId = new Map<number, CandidateOrderRow[]>();
+
+    for (const order of candidates) {
+      const rawGroupCity = isIda
+        ? (order.destinationCity ?? order.destination)
+        : (order.originCity ?? order.origin);
+
+      const matched = this.matchOrderCity(rawGroupCity, orderedRouteCities);
+      if (!matched) {
+        continue;
+      }
+
+      if (this.normalizeCityText(matched.cityName) === normalizedOriginCity) {
+        continue;
+      }
+
+      const bucket = ordersByRouteCityId.get(matched.id) ?? [];
+      bucket.push(order);
+      ordersByRouteCityId.set(matched.id, bucket);
+    }
+
+    const groups: SuggestedGroup[] = [];
+    let routeOrder = 0;
+
+    for (const routeCity of orderedRouteCities) {
+      const bucket = ordersByRouteCityId.get(routeCity.id);
+      if (!bucket || bucket.length === 0) {
+        continue;
+      }
+
+      bucket.sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
+
+      const limitedBucket =
+        maxStopsPerCity !== null ? bucket.slice(0, maxStopsPerCity) : bucket;
+
+      const stops: SuggestedStop[] = limitedBucket.map((order, index) => {
+        const cashAmount = order.amountToCollect ?? 0;
+
+        return {
+          orderId: order.id,
+          sequence: index + 1,
+          stopType: isIda ? 'delivery' : 'pickup',
+          city: routeCity.cityName,
+          address:
+            (isIda ? order.destinationAddress : order.originAddress) ||
+            (isIda ? order.destination : order.origin),
+          contactName: (isIda ? order.recipientName : order.senderName) ?? null,
+          contactPhone:
+            (isIda ? order.recipientPhone : order.senderPhone) ?? null,
+          cashOnDelivery: cashAmount > 0,
+          cashAmount,
+          notes: order.notes ?? null,
+        };
+      });
+
+      routeOrder += 1;
+      groups.push({
+        city: routeCity.cityName,
+        routeOrder,
+        totalOrders: stops.length,
+        totalCashAmount: stops.reduce((sum, stop) => sum + stop.cashAmount, 0),
+        stops,
+      });
+    }
+
+    return {
+      tripDate: dto.tripDate.slice(0, 10),
+      routeName,
+      direction: dto.direction,
+      originCity,
+      finalDestinationCity,
+      driverId: dto.driverId,
+      groups,
+    };
   }
 }
