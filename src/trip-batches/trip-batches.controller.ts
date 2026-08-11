@@ -18,10 +18,12 @@ import {
   TripBatchWithDriver,
 } from './interfaces/trip-batch.interface';
 import { RouteCity } from './interfaces/route-city.interface';
+import { TripBatchSuggestion } from './interfaces/trip-batch-suggestion.interface';
 import { CreateTripBatchDto } from './dto/create-trip-batch.dto';
 import { UpdateTripBatchDto } from './dto/update-trip-batch.dto';
 import { CreateRouteCityDto } from './dto/create-route-city.dto';
 import { UpdateRouteCityDto } from './dto/update-route-city.dto';
+import { TripBatchSuggestionDto } from './dto/trip-batch-suggestion.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard)
@@ -53,6 +55,14 @@ export class TripBatchesController {
   @Delete('route-cities/:id')
   async removeRouteCity(@Param('id', ParseIntPipe) id: number): Promise<void> {
     return this.tripBatchesService.removeRouteCity(id);
+  }
+
+  // Declared before ':id' routes so 'suggestions' is not matched as the :id param.
+  @Post('suggestions')
+  async generateSuggestion(
+    @Body() body: TripBatchSuggestionDto,
+  ): Promise<TripBatchSuggestion> {
+    return this.tripBatchesService.generateSuggestion(body);
   }
 
   @Get()
