@@ -1,9 +1,12 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import * as sql from 'mssql';
 import { ConnectionPool } from 'mssql';
 import {
   TripBatch,
@@ -18,6 +21,10 @@ import {
   TripBatchSuggestion,
 } from './interfaces/trip-batch-suggestion.interface';
 import {
+  ConfirmedTripBatchTripSummary,
+  ConfirmTripBatchResult,
+} from './interfaces/confirm-trip-batch.interface';
+import {
   CreateTripBatchDto,
   TripBatchDirection,
 } from './dto/create-trip-batch.dto';
@@ -25,12 +32,15 @@ import { UpdateTripBatchDto } from './dto/update-trip-batch.dto';
 import { CreateRouteCityDto } from './dto/create-route-city.dto';
 import { UpdateRouteCityDto } from './dto/update-route-city.dto';
 import { TripBatchSuggestionDto } from './dto/trip-batch-suggestion.dto';
+import { ConfirmTripBatchDto } from './dto/confirm-trip-batch.dto';
 
 const SQL_ERROR_FK_VIOLATION = 547;
 const DEFAULT_ROUTE_NAME = 'Ceres - Santa Fe';
 
 @Injectable()
 export class TripBatchesService {
+  private readonly logger = new Logger(TripBatchesService.name);
+
   constructor(
     @Inject('DATABASE_CONNECTION')
     private readonly pool: ConnectionPool,
@@ -507,26 +517,37 @@ export class TripBatchesService {
       : [...activeRouteCities].reverse();
 
     const candidates = await this.findCandidateOrders();
-    const normalizedOriginCity = this.normalizeCityText(originCity);
     const ordersByRouteCityId = new Map<number, CandidateOrderRow[]>();
 
     for (const order of candidates) {
-      const rawGroupCity = isIda
-        ? (order.destinationCity ?? order.destination)
-        : (order.originCity ?? order.origin);
+      const rawOriginCity = order.originCity ?? order.origin;
+      const rawDestinationCity = order.destinationCity ?? order.destination;
 
-      const matched = this.matchOrderCity(rawGroupCity, orderedRouteCities);
-      if (!matched) {
+      const matchedOrigin = this.matchOrderCity(
+        rawOriginCity,
+        activeRouteCities,
+      );
+      const matchedDestination = this.matchOrderCity(
+        rawDestinationCity,
+        activeRouteCities,
+      );
+
+      if (!matchedOrigin || !matchedDestination) {
         continue;
       }
 
-      if (this.normalizeCityText(matched.cityName) === normalizedOriginCity) {
+      if (matchedOrigin.sequence === matchedDestination.sequence) {
         continue;
       }
 
-      const bucket = ordersByRouteCityId.get(matched.id) ?? [];
+      const isOrderIda = matchedOrigin.sequence < matchedDestination.sequence;
+      if (isOrderIda !== isIda) {
+        continue;
+      }
+
+      const bucket = ordersByRouteCityId.get(matchedDestination.id) ?? [];
       bucket.push(order);
-      ordersByRouteCityId.set(matched.id, bucket);
+      ordersByRouteCityId.set(matchedDestination.id, bucket);
     }
 
     const groups: SuggestedGroup[] = [];
@@ -552,14 +573,11 @@ export class TripBatchesService {
         return {
           orderId: order.id,
           sequence: index + 1,
-          stopType: isIda ? 'delivery' : 'pickup',
+          stopType: 'delivery',
           city: routeCity.cityName,
-          address:
-            (isIda ? order.destinationAddress : order.originAddress) ||
-            (isIda ? order.destination : order.origin),
-          contactName: (isIda ? order.recipientName : order.senderName) ?? null,
-          contactPhone:
-            (isIda ? order.recipientPhone : order.senderPhone) ?? null,
+          address: order.destinationAddress || order.destination,
+          contactName: order.recipientName ?? null,
+          contactPhone: order.recipientPhone ?? null,
           cashOnDelivery: cashAmount > 0,
           cashAmount,
           notes: order.notes ?? null,
@@ -585,5 +603,321 @@ export class TripBatchesService {
       driverId: dto.driverId,
       groups,
     };
+  }
+
+  private async assertOrdersConfirmable(orderIds: number[]): Promise<void> {
+    this.logger.debug(
+      `[confirm] Validando existencia de órdenes: ${orderIds.join(', ')}`,
+    );
+
+    const ordersRequest = this.pool.request();
+    const orderParamNames = orderIds.map((id, index) => {
+      const paramName = `orderId${index}`;
+      ordersRequest.input(paramName, id);
+      return `@${paramName}`;
+    });
+
+    const ordersResult = await ordersRequest.query(`
+      SELECT id, status FROM Orders WHERE id IN (${orderParamNames.join(', ')})
+    `);
+
+    const statusByOrderId = new Map<number, string>(
+      ordersResult.recordset.map((row) => [row.id, row.status]),
+    );
+
+    for (const id of orderIds) {
+      if (!statusByOrderId.has(id)) {
+        throw new NotFoundException(`La orden ${id} no existe`);
+      }
+    }
+
+    this.logger.debug(
+      `[confirm] Validando status 'pendiente' de las órdenes: ${orderIds.join(', ')}`,
+    );
+
+    for (const id of orderIds) {
+      if (statusByOrderId.get(id) !== 'pendiente') {
+        throw new BadRequestException(`La orden ${id} no está pendiente`);
+      }
+    }
+
+    this.logger.debug(
+      `[confirm] Validando que las órdenes no estén en Order_Trip con una planilla activa: ${orderIds.join(', ')}`,
+    );
+
+    const activeTripRequest = this.pool.request();
+    const activeParamNames = orderIds.map((id, index) => {
+      const paramName = `activeOrderId${index}`;
+      activeTripRequest.input(paramName, id);
+      return `@${paramName}`;
+    });
+
+    const activeTripResult = await activeTripRequest.query(`
+      SELECT DISTINCT ot.orderId
+      FROM Order_Trip ot
+      INNER JOIN Trips t ON t.id = ot.tripId
+      WHERE ot.orderId IN (${activeParamNames.join(', ')}) AND t.status <> 'canceled'
+    `);
+
+    if (activeTripResult.recordset.length > 0) {
+      const assignedOrderId = activeTripResult.recordset[0].orderId;
+      throw new BadRequestException(
+        `La orden ${assignedOrderId} ya está asignada a otra hoja de ruta`,
+      );
+    }
+  }
+
+  async confirm(dto: ConfirmTripBatchDto): Promise<ConfirmTripBatchResult> {
+    const routeName = dto.routeName ?? DEFAULT_ROUTE_NAME;
+    const tripDate = dto.tripDate.slice(0, 10);
+
+    this.logger.debug(`[confirm] Validando driverId=${dto.driverId}`);
+    await this.assertDriverExists(dto.driverId);
+
+    this.logger.debug(
+      `[confirm] Validando groups (recibidos: ${dto.groups?.length ?? 0})`,
+    );
+    if (!dto.groups || dto.groups.length === 0) {
+      throw new BadRequestException(
+        'La salida no tiene grupos para confirmar',
+      );
+    }
+
+    const allStops = dto.groups.flatMap((group) => group.stops);
+    if (allStops.length === 0) {
+      throw new BadRequestException(
+        'La salida no tiene grupos para confirmar',
+      );
+    }
+
+    const orderIds = allStops.map((stop) => stop.orderId);
+    this.logger.debug(
+      `[confirm] Validando duplicados en orderIds: ${orderIds.join(', ')}`,
+    );
+    const duplicateOrderIds = [
+      ...new Set(
+        orderIds.filter((id, index) => orderIds.indexOf(id) !== index),
+      ),
+    ];
+    if (duplicateOrderIds.length > 0) {
+      throw new BadRequestException('Hay órdenes duplicadas en la salida');
+    }
+
+    await this.assertOrdersConfirmable(orderIds);
+
+    const transaction = new sql.Transaction(this.pool);
+    await transaction.begin();
+
+    try {
+      this.logger.debug('[confirm] Insertando TripBatch');
+      const batchResult = await new sql.Request(transaction)
+        .input('tripDate', tripDate)
+        .input('routeName', routeName)
+        .input('originCity', dto.originCity)
+        .input('finalDestinationCity', dto.finalDestinationCity)
+        .input('direction', dto.direction)
+        .input('status', 'confirmed')
+        .input('driverId', dto.driverId)
+        .input('notes', dto.notes ?? null).query(`
+          INSERT INTO TripBatches (
+            tripDate,
+            routeName,
+            originCity,
+            finalDestinationCity,
+            direction,
+            status,
+            driverId,
+            notes,
+            createdAt,
+            updatedAt
+          )
+          OUTPUT INSERTED.id
+          VALUES (
+            @tripDate,
+            @routeName,
+            @originCity,
+            @finalDestinationCity,
+            @direction,
+            @status,
+            @driverId,
+            @notes,
+            SYSUTCDATETIME(),
+            SYSUTCDATETIME()
+          )
+        `);
+
+      const batchId = batchResult.recordset[0].id;
+      const tripSummaries: ConfirmedTripBatchTripSummary[] = [];
+      let ordersAssigned = 0;
+
+      for (const group of dto.groups) {
+        this.logger.debug(
+          `[confirm] Insertando Trip para grupo/ciudad "${group.city}" (routeOrder=${group.routeOrder})`,
+        );
+        const tripResult = await new sql.Request(transaction)
+          .input('tripDate', tripDate)
+          .input('origin', dto.originCity)
+          .input('destination', group.city)
+          .input('status', 'scheduled')
+          .input('driverId', dto.driverId)
+          .input(
+            'notes',
+            `Planilla generada automáticamente para ${group.city}`,
+          )
+          .input('batchId', batchId)
+          .input('routeOrder', group.routeOrder)
+          .input('sheetCity', group.city).query(`
+            INSERT INTO Trips (
+              tripDate,
+              vehicle,
+              driver,
+              driverId,
+              origin,
+              destination,
+              status,
+              notes,
+              batchId,
+              routeOrder,
+              sheetCity
+            )
+            OUTPUT INSERTED.id
+            VALUES (
+              @tripDate,
+              NULL,
+              NULL,
+              @driverId,
+              @origin,
+              @destination,
+              @status,
+              @notes,
+              @batchId,
+              @routeOrder,
+              @sheetCity
+            )
+          `);
+
+        const tripId = tripResult.recordset[0].id;
+
+        for (const stop of group.stops) {
+          const stopCity = stop.city ?? group.city;
+
+          this.logger.debug(
+            `[confirm] Insertando TripStop para orderId=${stop.orderId} (tripId=${tripId}, sequence=${stop.sequence})`,
+          );
+          await new sql.Request(transaction)
+            .input('tripId', tripId)
+            .input('orderId', stop.orderId)
+            .input('sequence', stop.sequence)
+            .input('stopType', stop.stopType ?? 'delivery')
+            .input('city', stopCity)
+            .input('address', stop.address ?? null)
+            .input('contactName', stop.contactName ?? null)
+            .input('contactPhone', stop.contactPhone ?? null)
+            .input('scheduledTime', stop.scheduledTime ?? null)
+            .input('notes', stop.notes ?? null)
+            .input('cashOnDelivery', stop.cashOnDelivery ?? false)
+            .input('cashAmount', stop.cashAmount ?? 0)
+            .input('completed', false).query(`
+              INSERT INTO TripStops (
+                tripId,
+                orderId,
+                sequence,
+                stopType,
+                city,
+                address,
+                contactName,
+                contactPhone,
+                scheduledTime,
+                notes,
+                cashOnDelivery,
+                cashAmount,
+                completed
+              )
+              VALUES (
+                @tripId,
+                @orderId,
+                @sequence,
+                @stopType,
+                @city,
+                @address,
+                @contactName,
+                @contactPhone,
+                @scheduledTime,
+                @notes,
+                @cashOnDelivery,
+                @cashAmount,
+                @completed
+              )
+            `);
+
+          this.logger.debug(
+            `[confirm] Insertando Order_Trip para orderId=${stop.orderId}, tripId=${tripId}`,
+          );
+          await new sql.Request(transaction)
+            .input('orderId', stop.orderId)
+            .input('tripId', tripId).query(`
+              INSERT INTO Order_Trip (orderId, tripId)
+              VALUES (@orderId, @tripId)
+            `);
+
+          this.logger.debug(
+            `[confirm] Actualizando Orders.status='asignada' para orderId=${stop.orderId}`,
+          );
+          await new sql.Request(transaction).input('orderId', stop.orderId)
+            .query(`
+              UPDATE Orders SET status = 'asignada' WHERE id = @orderId
+            `);
+
+          ordersAssigned += 1;
+        }
+
+        tripSummaries.push({
+          id: tripId,
+          batchId,
+          sheetCity: group.city,
+          routeOrder: group.routeOrder,
+          stopsCreated: group.stops.length,
+        });
+      }
+
+      await transaction.commit();
+
+      return {
+        id: batchId,
+        tripDate,
+        routeName,
+        direction: dto.direction,
+        originCity: dto.originCity,
+        finalDestinationCity: dto.finalDestinationCity,
+        status: 'confirmed',
+        driverId: dto.driverId,
+        groupsCreated: dto.groups.length,
+        ordersAssigned,
+        trips: tripSummaries,
+      };
+    } catch (err) {
+      this.logger.error('[confirm] Error original al confirmar la salida:', err);
+
+      await transaction.rollback();
+
+      if (
+        err instanceof BadRequestException ||
+        err instanceof NotFoundException ||
+        err instanceof ConflictException
+      ) {
+        throw err;
+      }
+
+      const sqlError = err as { number?: number; stack?: string };
+      if (sqlError.number === SQL_ERROR_FK_VIOLATION) {
+        throw new BadRequestException(
+          'No se pudo confirmar la salida: alguno de los datos referenciados no existe',
+        );
+      }
+
+      throw new BadRequestException(
+        'No se pudo confirmar la salida. Verifique los datos e intente nuevamente.',
+      );
+    }
   }
 }
