@@ -24,6 +24,8 @@ import { UpdateTripBatchDto } from './dto/update-trip-batch.dto';
 import { CreateRouteCityDto } from './dto/create-route-city.dto';
 import { UpdateRouteCityDto } from './dto/update-route-city.dto';
 import { TripBatchSuggestionDto } from './dto/trip-batch-suggestion.dto';
+import { ConfirmTripBatchDto } from './dto/confirm-trip-batch.dto';
+import { ConfirmTripBatchResult } from './interfaces/confirm-trip-batch.interface';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard)
@@ -63,6 +65,14 @@ export class TripBatchesController {
     @Body() body: TripBatchSuggestionDto,
   ): Promise<TripBatchSuggestion> {
     return this.tripBatchesService.generateSuggestion(body);
+  }
+
+  // Declared before ':id' routes so 'confirm' is not matched as the :id param.
+  @Post('confirm')
+  async confirm(
+    @Body() body: ConfirmTripBatchDto,
+  ): Promise<ConfirmTripBatchResult> {
+    return this.tripBatchesService.confirm(body);
   }
 
   @Get()
