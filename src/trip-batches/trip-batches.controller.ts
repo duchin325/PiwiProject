@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -19,11 +20,14 @@ import {
 } from './interfaces/trip-batch.interface';
 import { RouteCity } from './interfaces/route-city.interface';
 import { TripBatchSuggestion } from './interfaces/trip-batch-suggestion.interface';
+import { ConfirmTripBatchResponse } from './interfaces/trip-batch.interface';
 import { CreateTripBatchDto } from './dto/create-trip-batch.dto';
 import { UpdateTripBatchDto } from './dto/update-trip-batch.dto';
 import { CreateRouteCityDto } from './dto/create-route-city.dto';
 import { UpdateRouteCityDto } from './dto/update-route-city.dto';
 import { TripBatchSuggestionDto } from './dto/trip-batch-suggestion.dto';
+import { ConfirmTripBatchDto } from './dto/confirm-trip-batch.dto';
+import { UpdateTripBatchStatusDto } from './dto/update-trip-batch-status.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard)
@@ -65,6 +69,14 @@ export class TripBatchesController {
     return this.tripBatchesService.generateSuggestion(body);
   }
 
+  // Declared before ':id' routes so 'confirm' is not matched as the :id param.
+  @Post('confirm')
+  async confirm(
+    @Body() body: ConfirmTripBatchDto,
+  ): Promise<ConfirmTripBatchResponse> {
+    return this.tripBatchesService.confirm(body);
+  }
+
   @Get()
   async getAll(): Promise<TripBatchWithDriver[]> {
     return this.tripBatchesService.findAll();
@@ -98,6 +110,14 @@ export class TripBatchesController {
     @Body() body: UpdateTripBatchDto,
   ): Promise<TripBatch> {
     return this.tripBatchesService.update(id, body);
+  }
+
+  @Patch(':id/status')
+  async updateStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdateTripBatchStatusDto,
+  ): Promise<TripBatch> {
+    return this.tripBatchesService.updateStatus(id, body.status);
   }
 
   @Delete(':id')

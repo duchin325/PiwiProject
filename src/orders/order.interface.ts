@@ -3,9 +3,11 @@ export interface Order {
   clientId: number;
   origin: string;
   destination: string;
+  originCity: string | null;
+  destinationCity: string | null;
   weight: number;
   volume: number | null;
-  status: 'pendiente' | 'en tránsito' | 'entregado';
+  status: 'pendiente' | 'asignada' | 'en tránsito' | 'entregado' | 'cancelado';
   createdAt: string;
   originAddress: string | null;
   destinationAddress: string | null;

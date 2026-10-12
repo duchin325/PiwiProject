@@ -1,0 +1,281 @@
+### =====================================================================
+### Ciclo de vida completo de una salida (REST Client de VS Code)
+###
+### ATENCION: escribe en la base REAL a la que apunte el backend (.env).
+### Crea 2 ordenes, una salida, 2 hojas de ruta y despues la cancela.
+### Usar una base de pruebas, o limpiar luego (ver consultas al final).
+###
+### Requisitos previos:
+###  - Backend levantado (npm run start:dev) y sql/003_tripstops_name.sql aplicado.
+###  - Existe el cliente @clientId y el conductor @driverId (ajustar abajo).
+###  - RouteCities activas "Rafaela" y "Esperanza" en la ruta "Ceres - Santa Fe",
+###    en ese orden de recorrido para la ida (ver el paso 3).
+### =====================================================================
+
+@baseUrl = http://localhost:3001
+@clientId = 1
+@driverId = 1
+@tripDate = 2026-11-01
+
+### 1) Login ----------------------------------------------------------
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin@demo.com",
+  "password": "adm_123"
+}
+
+###
+@token = {{login.response.body.access_token}}
+
+### 2a) Crear orden 1 (destino Rafaela). Siempre nace "pendiente" ------
+# @name order1
+POST {{baseUrl}}/orders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "clientId": {{clientId}},
+  "origin": "Ceres, Santa Fe",
+  "destination": "Rafaela, Santa Fe",
+  "originCity": "Ceres",
+  "destinationCity": "Rafaela",
+  "weight": 2.5,
+  "volume": 0.1,
+  "destinationAddress": "Bv. Lehmann 100",
+  "recipientName": "Prueba Rafaela",
+  "recipientPhone": "3492000001",
+  "amountToCollect": 1500,
+  "notes": "PRUEBA lifecycle.http",
+  "status": "entregado"
+}
+
+### 2b) Crear orden 2 (destino Esperanza) -----------------------------
+# @name order2
+POST {{baseUrl}}/orders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "clientId": {{clientId}},
+  "origin": "Ceres, Santa Fe",
+  "destination": "Esperanza, Santa Fe",
+  "originCity": "Ceres",
+  "destinationCity": "Esperanza",
+  "weight": 1,
+  "destinationAddress": "San Martin 200",
+  "recipientName": "Prueba Esperanza",
+  "notes": "PRUEBA lifecycle.http"
+}
+
+###
+@order1Id = {{order1.response.body.id}}
+@order2Id = {{order2.response.body.id}}
+
+### 2c) Verificar: "pendiente" (el status enviado en 2a se ignoro) -----
+GET {{baseUrl}}/orders/{{order1Id}}
+Authorization: Bearer {{token}}
+
+### 3) Sugerencias (no persiste). Deben aparecer las 2 ordenes (y las --
+###    otras pendientes que haya en la base). Mirar groups y skippedOrders.
+# @name suggestion
+POST {{baseUrl}}/trip-batches/suggestions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tripDate": "{{tripDate}}",
+  "direction": "ida",
+  "driverId": {{driverId}}
+}
+
+### 4) Confirmar (arma el payload a mano solo con las 2 ordenes de prueba;
+###    el frontend usa buildConfirmPayloadFromSuggestion con la sugerencia).
+###    Respetar el orden de las ciudades segun el paso 3.
+# @name confirm
+POST {{baseUrl}}/trip-batches/confirm
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tripDate": "{{tripDate}}",
+  "routeName": "Ceres - Santa Fe",
+  "direction": "ida",
+  "originCity": "Ceres",
+  "finalDestinationCity": "Santa Fe",
+  "driverId": {{driverId}},
+  "notes": "PRUEBA lifecycle.http",
+  "groups": [
+    {
+      "city": "Rafaela",
+      "routeOrder": 1,
+      "stops": [
+        {
+          "orderId": {{order1Id}},
+          "sequence": 1,
+          "stopType": "delivery",
+          "city": "Rafaela",
+          "address": "Bv. Lehmann 100",
+          "contactName": "Prueba Rafaela",
+          "contactPhone": "3492000001",
+          "cashOnDelivery": true,
+          "cashAmount": 1500
+        }
+      ]
+    },
+    {
+      "city": "Esperanza",
+      "routeOrder": 2,
+      "stops": [
+        {
+          "orderId": {{order2Id}},
+          "sequence": 1,
+          "stopType": "delivery",
+          "city": "Esperanza",
+          "address": "San Martin 200",
+          "contactName": "Prueba Esperanza",
+          "cashOnDelivery": false,
+          "cashAmount": 0
+        }
+      ]
+    }
+  ]
+}
+
+###
+@batchId = {{confirm.response.body.id}}
+@tripRafaelaId = {{confirm.response.body.trips[0].id}}
+
+### 5) Repetir el confirm: debe dar 409 con orderIds [order1, order2] ---
+POST {{baseUrl}}/trip-batches/confirm
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "tripDate": "{{tripDate}}",
+  "routeName": "Ceres - Santa Fe",
+  "direction": "ida",
+  "originCity": "Ceres",
+  "finalDestinationCity": "Santa Fe",
+  "driverId": {{driverId}},
+  "groups": [
+    {
+      "city": "Rafaela",
+      "routeOrder": 1,
+      "stops": [
+        {
+          "orderId": {{order1Id}},
+          "sequence": 1,
+          "stopType": "delivery",
+          "city": "Rafaela",
+          "address": "Bv. Lehmann 100",
+          "cashOnDelivery": false,
+          "cashAmount": 0
+        },
+        {
+          "orderId": {{order2Id}},
+          "sequence": 2,
+          "stopType": "delivery",
+          "city": "Rafaela",
+          "address": "San Martin 200",
+          "cashOnDelivery": false,
+          "cashAmount": 0
+        }
+      ]
+    }
+  ]
+}
+
+### 6) Transicion invalida (confirmed -> completed): debe dar 400 ------
+PATCH {{baseUrl}}/trip-batches/{{batchId}}/status
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "status": "completed" }
+
+### 7) Iniciar la salida: confirmed -> in_transit ----------------------
+PATCH {{baseUrl}}/trip-batches/{{batchId}}/status
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "status": "in_transit" }
+
+### 8a) Paradas de la hoja de Rafaela ----------------------------------
+# @name stops
+GET {{baseUrl}}/trip-stops/trip/{{tripRafaelaId}}
+Authorization: Bearer {{token}}
+
+###
+@stopId = {{stops.response.body.$[0].id}}
+
+### 8b) Completar la parada delivery: la orden 1 pasa a "entregado" ----
+PUT {{baseUrl}}/trip-stops/{{stopId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "completed": true }
+
+### 9) Cancelar la salida: orden 2 vuelve a "pendiente", orden 1 sigue
+###    "entregado"; Order_Trip y TripStops se conservan como historial.
+PATCH {{baseUrl}}/trip-batches/{{batchId}}/status
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "status": "canceled" }
+
+### 10) Cancelar de nuevo: debe dar 400 (canceled -> canceled) ---------
+PATCH {{baseUrl}}/trip-batches/{{batchId}}/status
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "status": "canceled" }
+
+### =====================================================================
+### CONSULTAS DE VERIFICACION (ejecutar en SSMS despues de cada paso)
+### Reemplazar los valores de @o1, @o2 y @b por los ids reales
+### (order1Id, order2Id y batchId de las respuestas).
+###
+# DECLARE @o1 INT = 0, @o2 INT = 0, @b INT = 0;
+#
+# -- Orders
+# SELECT id, status, originCity, destinationCity, notes
+# FROM dbo.Orders WHERE id IN (@o1, @o2);
+#
+# -- TripBatches
+# SELECT id, status, direction, originCity, finalDestinationCity, driverId, updatedAt
+# FROM dbo.TripBatches WHERE id = @b;
+#
+# -- Trips de la salida
+# SELECT id, batchId, routeOrder, sheetCity, status, origin, destination, tripDate, driverId
+# FROM dbo.Trips WHERE batchId = @b ORDER BY routeOrder;
+#
+# -- TripStops de la salida
+# SELECT s.id, s.tripId, s.orderId, s.sequence, s.name, s.stopType, s.city,
+#        s.cashOnDelivery, s.cashAmount, s.completed
+# FROM dbo.TripStops s JOIN dbo.Trips t ON t.id = s.tripId
+# WHERE t.batchId = @b ORDER BY t.routeOrder, s.sequence;
+#
+# -- Order_Trip de la salida
+# SELECT ot.orderId, ot.tripId, t.status AS tripStatus
+# FROM dbo.Order_Trip ot JOIN dbo.Trips t ON t.id = ot.tripId
+# WHERE t.batchId = @b;
+#
+# Estado esperado por paso:
+#   2c  Orders: ambas 'pendiente'. No hay TripBatches/Trips.
+#   4   Orders: 'asignada'. TripBatches 'confirmed'. Trips 'scheduled' (routeOrder 1,2,
+#       sheetCity Rafaela/Esperanza). TripStops: 1 por orden (sequence 1, name = contacto).
+#       Order_Trip: 2 filas.
+#   5   (409) Nada cambia respecto del paso 4.
+#   7   Orders: 'en tránsito'. TripBatches 'in_transit'. Trips 'in_transit'.
+#   8b  Orden 1 'entregado'; orden 2 'en tránsito'. TripStops de la orden 1: completed = 1.
+#   9   Orden 1 'entregado'; orden 2 'pendiente'. TripBatches 'canceled'. Trips 'canceled'.
+#       TripStops y Order_Trip siguen existiendo.
+#
+# -- Limpieza opcional (borra todo lo de la prueba; las FK exigen este orden)
+# DELETE FROM dbo.TripStops WHERE tripId IN (SELECT id FROM dbo.Trips WHERE batchId = @b);
+# DELETE FROM dbo.Order_Trip WHERE tripId IN (SELECT id FROM dbo.Trips WHERE batchId = @b);
+# DELETE FROM dbo.Trips WHERE batchId = @b;
+# DELETE FROM dbo.TripBatches WHERE id = @b;
+# DELETE FROM dbo.Orders WHERE id IN (@o1, @o2);

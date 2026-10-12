@@ -5,7 +5,7 @@ export interface TripStop {
   tripId: number;
   orderId: number | null;
   sequence: number;
-  name: string;
+  name: string | null;
   stopType: TripStopType;
   city: string;
   address: string | null;

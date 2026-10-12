@@ -57,21 +57,31 @@ Modules are fully independent — they do not import each other. Cross-entity re
 | Module | Route prefix | Notes |
 |---|---|---|
 | `clients` | `/clients` | Full CRUD |
-| `orders` | `/orders` | Status: `pendiente` / `en tránsito` / `entregado` |
+| `orders` | `/orders` | Created always as `pendiente` (`status` in POST is ignored). Status: `pendiente` / `asignada` / `en tránsito` / `entregado` / `cancelado`. Manual only `pendiente` ↔ `cancelado`; the rest is driven by the trip-batch lifecycle |
 | `drivers` | `/drivers` | `licenseNumber` has unique index |
 | `trips` | `/trips` | Status: `scheduled` / `in_transit` / `delivered` / `canceled`; FK to drivers |
-| `order-trip` | `/order-trip` | Junction table; extra endpoints: `GET order/:orderId`, `GET trip/:tripId` |
-| `trip-stops` | `/trip-stops` | Ordered delivery stops; extra endpoint: `GET trip/:tripId` |
+| `order-trip` | `/order-trip` | Junction table, **read-only** (GET, `GET order/:orderId`, `GET trip/:tripId`); rows are created only by `POST /trip-batches/confirm` |
+| `trip-stops` | `/trip-stops` | Ordered delivery stops; extra endpoint: `GET trip/:tripId`. `orderId` cannot be set manually; completing a `delivery` stop marks its in-transit order `entregado` |
+| `trip-batches` | `/trip-batches` | "Salidas" + `route-cities` + `suggestions`; `POST` creates batches always as `draft`; `POST confirm` and `PATCH :id/status` run the lifecycle (see below) |
 | `routes` | `/routes` | Stores `routeGeoJson` and `pdfUrl` for a trip |
 | `auth` | `/auth` | `POST /login` only |
 
+### Trip-batch lifecycle
+
+Confirming a suggestion (`POST /trip-batches/confirm`) creates the batch (`confirmed`), one `Trips` row per city (`scheduled`, with `batchId`/`routeOrder`/`sheetCity`), their `TripStops`, `Order_Trip` links, and moves orders `pendiente → asignada` — all in ONE mssql transaction (`pool.transaction()`), locking orders with `WITH (UPDLOCK, ROWLOCK)`; stale orders give 409 with `orderIds`. `PATCH /trip-batches/:id/status` applies `draft→confirmed→in_transit→completed` (+ cancel from any non-final state) and propagates to Trips/Orders; cancel returns undelivered orders to `pendiente` and keeps `Order_Trip`/`TripStops` as history. `PUT /trip-batches/:id` does not change status. Multi-table writes must use a transaction (`withTransaction` in `trip-batches.service.ts`). Full rules: `BACKEND_OVERVIEW.md` §6.4.
+
 ### SQL naming and schema notes
+
+- **`sql/000_baseline.sql` is the source of truth for the schema** (snapshot of the real DB). New changes go in `sql/00N_*.sql`, idempotent.
+- `sql/000_baseline.sql` lacks `TripStops.name`; apply `sql/003_tripstops_name.sql` on top (the frontend sends/shows it; confirm fills it with the contact name or `Encomienda #id`).
+- Manual smoke test against a real DB: `test/manual/lifecycle.http` (VS Code REST Client) with verification SQL in its comments.
 
 - The junction table is named `Order_Trip` in SQL (not `OrderTrip`). Its service queries use this exact name.
 - The `Trips` table has legacy `vehicle` and `driver` (NVARCHAR) columns that are always inserted as `NULL`. The canonical driver reference is `driverId` (FK to `Drivers`).
 - `TripStops` has a `UNIQUE` index on `(tripId, sequence)` — sequence numbers must be unique per trip. `TripStops` also cascades deletes from `Trips`.
 - Date handling in `Trips`: a single ISO datetime string from the client is split into `tripDate` (date-only) and `departureTime` (full datetime2). Queries use `COALESCE(departureTime, CAST(tripDate AS datetime2))` as the display date.
 - Dynamic UPDATE pattern: services for `Orders`, `TripStops`, and `Trips` build the SET clause at runtime from the keys present in the DTO. Empty-patch calls (no keys) are silently ignored or return early.
+- Unit tests mock the pool (`request()` / `transaction()`); see `trip-batches.lifecycle.spec.ts` for the helper pattern.
 
 ### Validation
 

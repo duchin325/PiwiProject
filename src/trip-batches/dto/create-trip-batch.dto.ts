@@ -41,10 +41,6 @@ export class CreateTripBatchDto {
   @IsEnum(TripBatchDirection)
   direction: TripBatchDirection;
 
-  @IsOptional()
-  @IsEnum(TripBatchStatus)
-  status?: TripBatchStatus;
-
   @Type(() => Number)
   @IsInt()
   driverId: number;

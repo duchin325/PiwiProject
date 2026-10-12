@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -9,6 +10,9 @@ import { ConnectionPool } from 'mssql';
 import { CreateTripStopDto } from './dto/create-trip-stop.dto';
 import { UpdateTripStopDto } from './dto/update-trip-stop.dto';
 import { TripStop } from './trip-stop.interface';
+
+const MANUAL_ORDER_ASSIGNMENT_MESSAGE =
+  'La asignación manual de encomiendas a hojas de ruta todavía no está soportada. Usá el flujo de Salidas por ciudad.';
 
 @Injectable()
 export class TripStopsService {
@@ -47,6 +51,10 @@ export class TripStopsService {
   }
 
   async create(data: CreateTripStopDto): Promise<number> {
+    if (data.orderId !== null && data.orderId !== undefined) {
+      throw new BadRequestException(MANUAL_ORDER_ASSIGNMENT_MESSAGE);
+    }
+
     const result = await this.pool
       .request()
       .input('tripId', data.tripId)
@@ -102,27 +110,64 @@ export class TripStopsService {
   }
 
   async update(id: number, dto: UpdateTripStopDto): Promise<void> {
+    if (Object.prototype.hasOwnProperty.call(dto, 'orderId')) {
+      throw new BadRequestException(MANUAL_ORDER_ASSIGNMENT_MESSAGE);
+    }
+
     const sets = Object.keys(dto);
     if (sets.length === 0) return;
 
     const setClause = sets.map((key) => `${key} = @${key}`).join(', ');
 
-    const req = this.pool.request().input('id', id);
-    for (const set of sets) {
-      req.input(set, dto[set]);
-    }
-
+    // Al completar una parada de entrega con encomienda, la encomienda en
+    // transito pasa a entregado en la misma transaccion.
+    const tx = this.pool.transaction();
+    await tx.begin();
     try {
+      const req = tx.request().input('id', id);
+      for (const set of sets) {
+        req.input(set, dto[set]);
+      }
+
       const result = await req.query(`
         UPDATE TripStops
         SET ${setClause}
+        OUTPUT INSERTED.stopType, INSERTED.orderId, INSERTED.completed,
+               DELETED.completed AS wasCompleted
         WHERE id = @id
       `);
 
       if (result.rowsAffected[0] === 0) {
         throw new NotFoundException(`Trip stop with id ${id} not found`);
       }
+
+      const stop = result.recordset[0] as {
+        stopType: string;
+        orderId: number | null;
+        completed: boolean;
+        wasCompleted: boolean;
+      };
+      if (
+        stop.completed &&
+        !stop.wasCompleted &&
+        stop.stopType === 'delivery' &&
+        stop.orderId !== null
+      ) {
+        await tx
+          .request()
+          .input('orderId', stop.orderId)
+          .query(
+            `UPDATE Orders SET status = N'entregado' WHERE id = @orderId AND status = N'en tránsito'`,
+          );
+      }
+
+      await tx.commit();
     } catch (err) {
+      try {
+        await tx.rollback();
+      } catch {
+        // la transaccion ya pudo haber sido abortada
+      }
       this.logger.error(`Error updating trip stop ${id}`, err.stack);
       if (err instanceof NotFoundException) throw err;
       throw new InternalServerErrorException(

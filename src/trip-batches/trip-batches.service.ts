@@ -1,11 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ConnectionPool } from 'mssql';
+import { ConnectionPool, Transaction } from 'mssql';
 import {
+  ConfirmTripBatchResponse,
   TripBatch,
   TripBatchTrip,
   TripBatchWithDriver,
@@ -13,6 +15,7 @@ import {
 import { RouteCity } from './interfaces/route-city.interface';
 import {
   CandidateOrderRow,
+  SkippedOrder,
   SuggestedGroup,
   SuggestedStop,
   TripBatchSuggestion,
@@ -20,13 +23,32 @@ import {
 import {
   CreateTripBatchDto,
   TripBatchDirection,
+  TripBatchStatus,
 } from './dto/create-trip-batch.dto';
 import { UpdateTripBatchDto } from './dto/update-trip-batch.dto';
 import { CreateRouteCityDto } from './dto/create-route-city.dto';
 import { UpdateRouteCityDto } from './dto/update-route-city.dto';
 import { TripBatchSuggestionDto } from './dto/trip-batch-suggestion.dto';
+import { ConfirmTripBatchDto } from './dto/confirm-trip-batch.dto';
 
 const SQL_ERROR_FK_VIOLATION = 547;
+const SQL_ERRORS_UNIQUE_VIOLATION = [2601, 2627];
+
+// Transiciones permitidas del ciclo de vida de una salida.
+const BATCH_TRANSITIONS: Record<string, TripBatchStatus[]> = {
+  [TripBatchStatus.DRAFT]: [
+    TripBatchStatus.CONFIRMED,
+    TripBatchStatus.CANCELED,
+  ],
+  [TripBatchStatus.CONFIRMED]: [
+    TripBatchStatus.IN_TRANSIT,
+    TripBatchStatus.CANCELED,
+  ],
+  [TripBatchStatus.IN_TRANSIT]: [
+    TripBatchStatus.COMPLETED,
+    TripBatchStatus.CANCELED,
+  ],
+};
 const DEFAULT_ROUTE_NAME = 'Ceres - Santa Fe';
 
 @Injectable()
@@ -94,7 +116,7 @@ export class TripBatchesService {
 
   async create(data: CreateTripBatchDto): Promise<TripBatch> {
     const routeName = data.routeName ?? DEFAULT_ROUTE_NAME;
-    const status = data.status ?? 'draft';
+    const status = TripBatchStatus.DRAFT;
     const notes = data.notes ?? null;
 
     await this.assertDriverExists(data.driverId);
@@ -176,10 +198,6 @@ export class TripBatchesService {
     if (dto.direction !== undefined) {
       sets.push('direction = @direction');
       req.input('direction', dto.direction);
-    }
-    if (dto.status !== undefined) {
-      sets.push('status = @status');
-      req.input('status', dto.status);
     }
     if (dto.driverId !== undefined) {
       await this.assertDriverExists(dto.driverId);
@@ -430,32 +448,60 @@ export class TripBatchesService {
       .query('UPDATE dbo.RouteCities SET isActive = 0 WHERE id = @id');
   }
 
+  // Sin acentos, en minusculas, sin espacios sobrantes. Solo se usa para comparar.
   private normalizeCityText(value: string): string {
-    return value.trim().toLowerCase();
+    return value
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // Devuelve la ciudad (texto antes de la primera coma) del primer valor utilizable.
+  // Un valor nulo o solo con espacios no impide recurrir al campo alternativo.
+  private resolveOrderCity(
+    ...candidates: Array<string | null | undefined>
+  ): string | null {
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+      const city = candidate.split(',')[0].replace(/\s+/g, ' ').trim();
+      if (city) {
+        return city;
+      }
+    }
+    return null;
   }
 
   private matchOrderCity(
-    rawCity: string | null | undefined,
+    rawCity: string,
     routeCities: RouteCity[],
-  ): RouteCity | null {
-    if (!rawCity) {
-      return null;
-    }
-
+  ): { city: RouteCity | null; ambiguous: boolean } {
     const normalized = this.normalizeCityText(rawCity);
 
     const exact = routeCities.find(
       (rc) => this.normalizeCityText(rc.cityName) === normalized,
     );
     if (exact) {
-      return exact;
+      return { city: exact, ambiguous: false };
     }
 
-    const partialMatches = routeCities
-      .filter((rc) => normalized.includes(this.normalizeCityText(rc.cityName)))
-      .sort((a, b) => b.cityName.length - a.cityName.length);
+    // Palabras completas: "ceres centro" matchea "ceres", "esperanza" no matchea "per".
+    const asWords = (value: string) =>
+      ` ${this.normalizeCityText(value)
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim()} `;
+    const haystack = asWords(rawCity);
+    const wordMatches = routeCities.filter((rc) =>
+      haystack.includes(asWords(rc.cityName)),
+    );
 
-    return partialMatches[0] ?? null;
+    if (wordMatches.length === 1) {
+      return { city: wordMatches[0], ambiguous: false };
+    }
+    return { city: null, ambiguous: wordMatches.length > 1 };
   }
 
   private async findCandidateOrders(): Promise<CandidateOrderRow[]> {
@@ -510,17 +556,32 @@ export class TripBatchesService {
     const normalizedOriginCity = this.normalizeCityText(originCity);
     const ordersByRouteCityId = new Map<number, CandidateOrderRow[]>();
 
+    const skippedOrders: SkippedOrder[] = [];
+
     for (const order of candidates) {
       const rawGroupCity = isIda
-        ? (order.destinationCity ?? order.destination)
-        : (order.originCity ?? order.origin);
+        ? this.resolveOrderCity(order.destinationCity, order.destination)
+        : this.resolveOrderCity(order.originCity, order.origin);
 
-      const matched = this.matchOrderCity(rawGroupCity, orderedRouteCities);
+      if (!rawGroupCity) {
+        skippedOrders.push({ orderId: order.id, reason: 'city_not_resolved' });
+        continue;
+      }
+
+      const { city: matched, ambiguous } = this.matchOrderCity(
+        rawGroupCity,
+        orderedRouteCities,
+      );
       if (!matched) {
+        skippedOrders.push({
+          orderId: order.id,
+          reason: ambiguous ? 'ambiguous_city' : 'city_not_in_route',
+        });
         continue;
       }
 
       if (this.normalizeCityText(matched.cityName) === normalizedOriginCity) {
+        skippedOrders.push({ orderId: order.id, reason: 'is_origin_city' });
         continue;
       }
 
@@ -584,6 +645,340 @@ export class TripBatchesService {
       finalDestinationCity,
       driverId: dto.driverId,
       groups,
+      skippedOrders,
     };
+  }
+
+  private async withTransaction<T>(
+    work: (tx: Transaction) => Promise<T>,
+  ): Promise<T> {
+    const tx = this.pool.transaction();
+    await tx.begin();
+    try {
+      const result = await work(tx);
+      await tx.commit();
+      return result;
+    } catch (err) {
+      try {
+        await tx.rollback();
+      } catch {
+        // la transaccion ya pudo haber sido abortada por el motor
+      }
+      throw err;
+    }
+  }
+
+  // Confirma una sugerencia: crea salida, hojas de ruta, paradas y asigna las
+  // encomiendas, todo en una transaccion.
+  async confirm(dto: ConfirmTripBatchDto): Promise<ConfirmTripBatchResponse> {
+    const orderIds = dto.groups.flatMap((g) => g.stops.map((s) => s.orderId));
+    if (new Set(orderIds).size !== orderIds.length) {
+      const repeated = [
+        ...new Set(orderIds.filter((id, i) => orderIds.indexOf(id) !== i)),
+      ];
+      throw new BadRequestException(
+        `Hay encomiendas repetidas en la salida: ${repeated.join(', ')}`,
+      );
+    }
+
+    const cities = dto.groups.map((g) => this.normalizeCityText(g.city));
+    if (cities.some((c) => !c) || new Set(cities).size !== cities.length) {
+      throw new BadRequestException(
+        'Cada grupo debe tener una ciudad distinta y no vacía',
+      );
+    }
+
+    const isIda = dto.direction === TripBatchDirection.IDA;
+    const routeName = dto.routeName ?? DEFAULT_ROUTE_NAME;
+    const tripDate = dto.tripDate.slice(0, 10);
+
+    try {
+      return await this.withTransaction(async (tx) => {
+        const driver = await tx
+          .request()
+          .input('driverId', dto.driverId)
+          .query('SELECT id FROM dbo.Drivers WHERE id = @driverId');
+        if (driver.recordset.length === 0) {
+          throw new BadRequestException('El conductor seleccionado no existe');
+        }
+
+        await this.assertOrdersAssignable(tx, orderIds);
+
+        const batchResult = await tx
+          .request()
+          .input('tripDate', tripDate)
+          .input('routeName', routeName)
+          .input('originCity', dto.originCity)
+          .input('finalDestinationCity', dto.finalDestinationCity)
+          .input('direction', dto.direction)
+          .input('status', TripBatchStatus.CONFIRMED)
+          .input('driverId', dto.driverId)
+          .input('notes', dto.notes ?? null).query(`
+            INSERT INTO TripBatches (
+              tripDate, routeName, originCity, finalDestinationCity,
+              direction, status, driverId, notes, createdAt, updatedAt
+            )
+            OUTPUT INSERTED.id
+            VALUES (
+              @tripDate, @routeName, @originCity, @finalDestinationCity,
+              @direction, @status, @driverId, @notes,
+              SYSUTCDATETIME(), SYSUTCDATETIME()
+            )
+          `);
+        const batchId = batchResult.recordset[0].id as number;
+
+        const trips: ConfirmTripBatchResponse['trips'] = [];
+
+        for (const [groupIndex, group] of dto.groups.entries()) {
+          const sheetCity = group.city.trim();
+          const routeOrder = groupIndex + 1;
+
+          const tripResult = await tx
+            .request()
+            .input('tripDate', tripDate)
+            .input('driverId', dto.driverId)
+            .input('origin', isIda ? dto.originCity : sheetCity)
+            .input('destination', isIda ? sheetCity : dto.finalDestinationCity)
+            .input('status', 'scheduled')
+            .input('batchId', batchId)
+            .input('routeOrder', routeOrder)
+            .input('sheetCity', sheetCity).query(`
+              INSERT INTO Trips (
+                tripDate, driverId, origin, destination, status,
+                batchId, routeOrder, sheetCity
+              )
+              OUTPUT INSERTED.id
+              VALUES (
+                @tripDate, @driverId, @origin, @destination, @status,
+                @batchId, @routeOrder, @sheetCity
+              )
+            `);
+          const tripId = tripResult.recordset[0].id as number;
+
+          for (const [stopIndex, stop] of group.stops.entries()) {
+            await tx
+              .request()
+              .input('tripId', tripId)
+              .input('orderId', stop.orderId)
+              .input('sequence', stopIndex + 1)
+              .input(
+                'name',
+                stop.contactName?.trim() || `Encomienda #${stop.orderId}`,
+              )
+              .input('stopType', stop.stopType)
+              .input('city', stop.city)
+              .input('address', stop.address ?? null)
+              .input('contactName', stop.contactName ?? null)
+              .input('contactPhone', stop.contactPhone ?? null)
+              .input('notes', stop.notes ?? null)
+              .input('cashOnDelivery', stop.cashOnDelivery)
+              .input('cashAmount', stop.cashAmount).query(`
+                INSERT INTO TripStops (
+                  tripId, orderId, sequence, name, stopType, city, address,
+                  contactName, contactPhone, notes, cashOnDelivery, cashAmount
+                )
+                VALUES (
+                  @tripId, @orderId, @sequence, @name, @stopType, @city, @address,
+                  @contactName, @contactPhone, @notes, @cashOnDelivery,
+                  @cashAmount
+                )
+              `);
+
+            await tx
+              .request()
+              .input('orderId', stop.orderId)
+              .input('tripId', tripId)
+              .query(
+                'INSERT INTO Order_Trip (orderId, tripId) VALUES (@orderId, @tripId)',
+              );
+          }
+
+          trips.push({
+            id: tripId,
+            batchId,
+            sheetCity,
+            routeOrder,
+            stopsCreated: group.stops.length,
+          });
+        }
+
+        const request = tx.request();
+        const placeholders = orderIds.map((id, i) => {
+          request.input(`o${i}`, id);
+          return `@o${i}`;
+        });
+        const updated = await request.query(`
+          UPDATE Orders SET status = N'asignada'
+          WHERE id IN (${placeholders.join(', ')}) AND status = N'pendiente'
+        `);
+        if (updated.rowsAffected[0] !== orderIds.length) {
+          throw new ConflictException(
+            'No se pudo asignar todas las encomiendas; reintentá la operación',
+          );
+        }
+
+        return {
+          id: batchId,
+          tripDate,
+          routeName,
+          direction: dto.direction,
+          originCity: dto.originCity,
+          finalDestinationCity: dto.finalDestinationCity,
+          status: TripBatchStatus.CONFIRMED,
+          driverId: dto.driverId,
+          groupsCreated: trips.length,
+          ordersAssigned: orderIds.length,
+          trips,
+        };
+      });
+    } catch (err) {
+      const sqlError = err as { number?: number };
+      if (
+        sqlError.number &&
+        SQL_ERRORS_UNIQUE_VIOLATION.includes(sqlError.number)
+      ) {
+        throw new ConflictException(
+          'La salida tiene datos duplicados (ciudad u orden de parada repetidos)',
+        );
+      }
+      if (sqlError.number === SQL_ERROR_FK_VIOLATION) {
+        throw new BadRequestException(
+          'La salida referencia datos que no existen (conductor o encomiendas)',
+        );
+      }
+      throw err;
+    }
+  }
+
+  // Bloquea las filas de las encomiendas y verifica que sigan pendientes y sin
+  // un viaje no cancelado. Lanza 409 con los ids afectados si alguna no cumple.
+  private async assertOrdersAssignable(
+    tx: Transaction,
+    orderIds: number[],
+  ): Promise<void> {
+    const request = tx.request();
+    const placeholders = orderIds.map((id, i) => {
+      request.input(`o${i}`, id);
+      return `@o${i}`;
+    });
+
+    const result = await request.query(`
+      SELECT
+        o.id,
+        o.status,
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM Order_Trip ot
+          INNER JOIN Trips t ON t.id = ot.tripId
+          WHERE ot.orderId = o.id AND t.status <> 'canceled'
+        ) THEN 1 ELSE 0 END AS hasActiveTrip
+      FROM Orders o WITH (UPDLOCK, ROWLOCK)
+      WHERE o.id IN (${placeholders.join(', ')})
+    `);
+
+    const rows = result.recordset as Array<{
+      id: number;
+      status: string;
+      hasActiveTrip: number;
+    }>;
+
+    const found = new Set(rows.map((r) => r.id));
+    const missing = orderIds.filter((id) => !found.has(id));
+    if (missing.length > 0) {
+      throw new BadRequestException(
+        `Las encomiendas no existen: ${missing.join(', ')}`,
+      );
+    }
+
+    const conflicting = rows
+      .filter((r) => r.status !== 'pendiente' || r.hasActiveTrip === 1)
+      .map((r) => r.id);
+    if (conflicting.length > 0) {
+      throw new ConflictException({
+        statusCode: 409,
+        message: `Las encomiendas ${conflicting.join(', ')} ya no están pendientes o ya están asignadas a otra salida`,
+        error: 'Conflict',
+        orderIds: conflicting,
+      });
+    }
+  }
+
+  // Cambia el estado de una salida y propaga el cambio a sus hojas de ruta
+  // y encomiendas en una sola transaccion.
+  async updateStatus(
+    id: number,
+    nextStatus: TripBatchStatus,
+  ): Promise<TripBatch> {
+    await this.withTransaction(async (tx) => {
+      const current = await tx
+        .request()
+        .input('id', id)
+        .query(
+          'SELECT status FROM TripBatches WITH (UPDLOCK, ROWLOCK) WHERE id = @id',
+        );
+      if (current.recordset.length === 0) {
+        throw new NotFoundException(`La salida con id ${id} no se encuentra`);
+      }
+
+      const currentStatus = current.recordset[0].status as string;
+      if (!BATCH_TRANSITIONS[currentStatus]?.includes(nextStatus)) {
+        throw new BadRequestException(
+          `No se puede pasar la salida de "${currentStatus}" a "${nextStatus}"`,
+        );
+      }
+
+      const exec = (sql: string) => tx.request().input('id', id).query(sql);
+
+      switch (nextStatus) {
+        case TripBatchStatus.IN_TRANSIT:
+          await exec(
+            `UPDATE Trips SET status = 'in_transit' WHERE batchId = @id AND status = 'scheduled'`,
+          );
+          await exec(this.orderStatusSql('en tránsito', ['asignada']));
+          break;
+        case TripBatchStatus.COMPLETED:
+          await exec(
+            `UPDATE Trips SET status = 'delivered' WHERE batchId = @id AND status = 'in_transit'`,
+          );
+          await exec(this.orderStatusSql('entregado', ['en tránsito']));
+          break;
+        case TripBatchStatus.CANCELED:
+          await exec(
+            `UPDATE Trips SET status = 'canceled' WHERE batchId = @id AND status <> 'canceled'`,
+          );
+          await exec(
+            this.orderStatusSql('pendiente', ['asignada', 'en tránsito']),
+          );
+          break;
+        default:
+          break;
+      }
+
+      await tx
+        .request()
+        .input('id', id)
+        .input('status', nextStatus)
+        .query(
+          'UPDATE TripBatches SET status = @status, updatedAt = SYSUTCDATETIME() WHERE id = @id',
+        );
+    });
+
+    return (await this.findOne(id)) as TripBatch;
+  }
+
+  // SQL fijo (sin valores del usuario) que mueve las encomiendas de los viajes de la salida.
+  private orderStatusSql(to: string, from: string[]): string {
+    const fromList = from.map((f) => `N'${f}'`).join(', ');
+    return `
+      UPDATE o SET status = N'${to}'
+      FROM Orders o
+      WHERE o.status IN (${fromList})
+        AND EXISTS (
+          SELECT 1
+          FROM Order_Trip ot
+          INNER JOIN Trips t ON t.id = ot.tripId
+          WHERE ot.orderId = o.id AND t.batchId = @id
+        )
+    `;
   }
 }

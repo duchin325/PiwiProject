@@ -1,5 +1,11 @@
 import { PartialType } from '@nestjs/mapped-types';
-import { CreateOrderDto } from './create-order.dto';
+import { IsEnum, IsOptional } from 'class-validator';
+import { CreateOrderDto, OrderStatus } from './create-order.dto';
 
-//Marco todas las propiedades de CreateOrderDto como opcionales
-export class UpdateOrderDto extends PartialType(CreateOrderDto) {}
+export class UpdateOrderDto extends PartialType(CreateOrderDto) {
+  // Solo se puede cambiar a mano entre pendiente y cancelado (lo valida el service);
+  // el resto de los estados los maneja el ciclo de vida de la salida.
+  @IsOptional()
+  @IsEnum(OrderStatus)
+  status?: OrderStatus;
+}

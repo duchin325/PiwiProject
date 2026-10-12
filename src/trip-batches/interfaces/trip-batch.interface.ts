@@ -30,3 +30,25 @@ export interface TripBatchTrip {
   driverId: number | null;
   createdAt: string;
 }
+
+export interface ConfirmTripBatchResponseTrip {
+  id: number;
+  batchId: number;
+  sheetCity: string;
+  routeOrder: number;
+  stopsCreated: number;
+}
+
+export interface ConfirmTripBatchResponse {
+  id: number;
+  tripDate: string;
+  routeName: string;
+  direction: string;
+  originCity: string;
+  finalDestinationCity: string;
+  status: string;
+  driverId: number;
+  groupsCreated: number;
+  ordersAssigned: number;
+  trips: ConfirmTripBatchResponseTrip[];
+}
